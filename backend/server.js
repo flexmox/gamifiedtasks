@@ -1,8 +1,10 @@
-// backend/server.js
+// Load environment variables from .env file
 require('dotenv').config();
 
+console.log('Starting server with configuration:');
 console.log('MONGODB_URI:', process.env.MONGODB_URI);
-
+console.log('PORT:', process.env.PORT);
+console.log('FRONTEND_URL:', process.env.FRONTEND_URL);
 
 const express = require('express');
 const cors = require('cors');
@@ -13,106 +15,165 @@ const User = require('./models/User');
 const Task = require('./models/Task');
 
 const app = express();
-const port = process.env.PORT || 5000;
 
-app.use(cors());
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://149.248.5.175:3001';
+
+console.log('Configuring CORS for origin:', FRONTEND_URL);
+app.use(cors({
+  origin: FRONTEND_URL,
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 app.use(bodyParser.json());
 app.use(express.json());
 
-// Connect to MongoDB
-// MongoDB connection
+console.log('Attempting to connect to MongoDB...');
 mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log('Connected to MongoDB'))
-  .catch(err => console.error('Could not connect to MongoDB', err));
+  .then(() => console.log('Connected to MongoDB successfully'))
+  .catch(err => console.error('Failed to connect to MongoDB:', err));
 
-  const userSchema = new mongoose.Schema({
-    name: String,
-    points: { type: Number, default: 0 }
-  });
-  
-  
-  module.exports = User;
-  
-  
-  app.put('/api/tasks/:id', async (req, res) => {
-    console.log('Received request to update task:', req.params.id);
-    try {
-      const task = await Task.findById(req.params.id);
-      console.log('Found task:', task);
-      if (!task) {
-        console.log('Task not found');
-        return res.status(404).json({ error: 'Task not found' });
-      }
-      
-      task.completed = !task.completed;
-      await task.save();
-      console.log('Task updated:', task);
-  
-      const user = await User.findById(task.userId);
-      console.log('Found user:', user);
-      if (user) {
-        user.points += task.completed ? task.points : -task.points;
-        await user.save();
-        console.log('User points updated:', user.points);
-      }
-  
-      res.json({ task, userPoints: user.points });
-    } catch (err) {
-      console.error('Error updating task:', err);
-      res.status(400).json({ error: err.message });
-    }
-  });
-  
-  app.post('/api/tasks', async (req, res) => {
-    try {
-      const { userId, name } = req.body;
-      const task = new Task({ userId, name });
-      await task.save();
-      console.log('Task created:', task);
-      res.json(task);
-    } catch (err) {
-      console.error('Error creating task:', err);
-      res.status(400).json({ error: err.message });
-    }
-  });
+// Log all incoming requests
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  next();
+});
 
-  // Add a route to get user information
-  app.get('/api/users/:id', async (req, res) => {
-    try {
-      const user = await User.findById(req.params.id);
-      if (user) {
-        res.json(user);
-      } else {
-        res.status(404).json({ error: 'User not found' });
-      }
-    } catch (err) {
-      res.status(400).json({ error: err.message });
+app.get('/api/users', async (req, res) => {
+  console.log('Received request to fetch all users');
+  try {
+    const users = await User.find({});
+    console.log(`Found ${users.length} users`);
+    res.json(users);
+  } catch (err) {
+    console.error('Error fetching users:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * Route to create a new user
+ * POST /api/users
+ */
+app.post('/api/users', async (req, res) => {
+  console.log('Received request to create user:', req.body);
+  try {
+    if (!req.body.name) {
+      return res.status(400).json({ error: 'Name is required' });
     }
-  });
-  app.post('/api/users', async (req, res) => {
-    console.log('Received request to create user:', req.body);
-    try {
-      const user = new User({ name: req.body.name, points: 0 });
+    const user = new User({ name: req.body.name, points: 0 });
+    await user.save();
+    console.log('User created:', user);
+    res.status(201).json(user);
+  } catch (err) {
+    console.error('Error creating user:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * Route to fetch tasks
+ * POST /api/tasks
+ */
+app.post('/api/tasks', async (req, res) => {
+  console.log('Received request to create task:', req.body);
+  try {
+    const { name, userId, frequency, dueDate } = req.body;
+    if (!name || !userId) {
+      return res.status(400).json({ error: 'Name and userId are required' });
+    }
+    const task = new Task({ 
+      name, 
+      userId, 
+      completed: false,
+      frequency: frequency || 'day',
+      dueDate: dueDate ? new Date(dueDate) : new Date()
+    });
+    await task.save();
+    console.log('Task created:', task);
+    res.status(201).json(task);
+  } catch (err) {
+    console.error('Error creating task:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * Route to fetch tasks for a specific user
+ * GET /api/tasks/:userId
+ */
+app.get('/api/tasks/:userId', async (req, res) => {
+  const { userId } = req.params;
+
+  if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    return res.status(400).json({ error: 'Invalid user ID' });
+  }
+
+  try {
+    const tasks = await Task.find({ userId });
+    
+    // If no tasks found, return an empty array instead of 404
+    if (!tasks || tasks.length === 0) {
+      return res.json([]);
+    }
+
+    res.json(tasks);
+  } catch (err) {
+    console.error('Error fetching tasks:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * Route to complete a task
+ * PUT /api/tasks/:taskId/complete
+ */
+app.put('/api/tasks/:taskId/complete', async (req, res) => {
+  console.log('Received request to complete task:', req.params.taskId);
+  
+  const { taskId } = req.params;
+
+  if (!taskId || !mongoose.Types.ObjectId.isValid(taskId)) {
+    return res.status(400).json({ error: 'Invalid task ID' });
+  }
+
+  try {
+    const task = await Task.findById(taskId);
+    
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    task.completed = true;
+    await task.save();
+
+    console.log('Task completed:', task);
+
+    // Update user points
+    const user = await User.findById(task.userId);
+    if (user) {
+      user.points += 1; // Or any point system you want to implement
       await user.save();
-      console.log('User created:', user);
-      res.json(user);
-    } catch (err) {
-      console.error('Error creating user:', err);
-      res.status(400).json({ error: err.message });
+      console.log('User points updated:', user.points);
     }
-  });
+
+    res.json({ task, userPoints: user ? user.points : null });
+  } catch (err) {
+    console.error('Error completing task:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
 
 
-  app.get('/api/tasks/:userId', async (req, res) => {
-    try {
-      const tasks = await Task.find({ userId: req.params.userId });
-      res.json(tasks);
-    } catch (err) {
-      console.error('Error fetching tasks:', err);
-      res.status(400).json({ error: err.message });
-    }
-  });
+const HOST = process.env.HOST || '149.248.5.175';
+const PORT = process.env.PORT || 5001;
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
